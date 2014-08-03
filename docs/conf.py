@@ -103,6 +103,12 @@ exclude_patterns = [
 # If true, keep warnings as "system message" paragraphs in the built documents.
 #keep_warnings = False
 
+# -- Autodoc configuration -----------------------------------------------------
+
+def autodoc_skip_member(app, what, name, obj, skip, options):
+    if name == "__init__":
+        return False
+    return skip
 
 # -- Options for HTML output ---------------------------------------------------
 
@@ -120,11 +126,14 @@ html_static_path = ['_static']
 
 # If not '', a 'Last updated on:' timestamp is inserted at every page bottom,
 # using the given strftime format.
-#html_last_updated_fmt = '%b %d, %Y'
+html_last_updated_fmt = '%b %d, %Y'
 
 # If true, SmartyPants will be used to convert quotes and dashes to
 # typographically correct entities.
-#html_use_smartypants = True
+#
+# Note: Best leave this off until Sphinx issue #1496 gets resolved
+# (https://bitbucket.org/birkenfeld/sphinx/issue/1496/smartypants-should-not-convert-text-in-a)
+html_use_smartypants = False
 
 # Additional templates that should be rendered to pages, maps page names to
 # template names.
@@ -289,6 +298,9 @@ epub_copyright = '2013, Guillaume Binet, Tali Davidovich Petrover and Nick Groen
 # If false, no index is generated.
 #epub_use_index = True
 
+# -- Misc options -------------------------------------------------------------
 
-# Example configuration for intersphinx: refer to the Python standard library.
 intersphinx_mapping = {'http://docs.python.org/': None}
+
+def setup(app):
+    app.connect("autodoc-skip-member", autodoc_skip_member)
