@@ -25,8 +25,8 @@ import os
 import config
 from config import BOT_DATA_DIR, BOT_PREFIX
 import errbot
-from errbot.backends.base import Connection, Message, build_text_html_message_pair
-from errbot.errBot import ErrBot
+from errbot.backends.base import Message, build_text_html_message_pair, Identifier
+from errbot.backed.text import TextBackend   # we use that as we emulate MUC there already
 
 
 class CommandBox(QtGui.QPlainTextEdit, object):
@@ -106,14 +106,14 @@ class CommandBox(QtGui.QPlainTextEdit, object):
         super(CommandBox, self).keyPressEvent(*args, **kwargs)
 
 
-class ConnectionMock(Connection, QtCore.QObject):
+class ConnectionMock(QtCore.QObject):
     newAnswer = QtCore.Signal(str, bool)
 
     def send_message(self, mess):
         self.send(mess)
 
     def send(self, mess):
-        if hasattr(mess, 'getBody') and mess.getBody() and not mess.getBody().isspace():
+        if hasattr(mess, 'body') and mess.body and not mess.body.isspace():
             content, is_html = mess_2_embeddablehtml(mess)
             self.newAnswer.emit(content, is_html)
 
@@ -126,16 +126,16 @@ urlfinder = re.compile(r'http([^\.\s]+\.[^\.\s]*)+[^\.\s]{2,}')
 def linkify(text):
     def replacewithlink(matchobj):
         url = matchobj.group(0)
-        text = str(url)
+        txt = str(url)
 
         imglink = ''
         for a in ['png', '.gif', '.jpg', '.jpeg', '.svg']:
-            if text.lower().endswith(a):
+            if txt.lower().endswith(a):
                 imglink = '<br /><img src="{}" />'.format(url)
                 break
         return ('<a href="{url}" target="_blank" rel="nofollow">{text}'
                 '<img class="imglink" src="/images/linkout.png"></a>'
-                '{imglink}'.format(url=url, text=text, imglink=imglink))
+                '{imglink}'.format(url=url, text=txt, imglink=imglink))
 
     return urlfinder.sub(replacewithlink, text)
 
@@ -202,27 +202,28 @@ class ChatApplication(QtGui.QApplication):
         self.output.page().mainFrame().scroll(0, self.output.page().mainFrame().scrollBarMaximum(QtCore.Qt.Vertical))
 
 
-class GraphicBackend(ErrBot):
+class GraphicBackend(TextBackend):
     def __init__(self, *args, **kwargs):
         self.conn = None
         super().__init__(*args, **kwargs)
+        self.jid = Identifier('Err')
+        self.app = None
 
     def send_command(self, text):
         self.app.new_message(text, False)
         msg = Message(text)
-        msg.setFrom(config.BOT_ADMINS[0])  # assume this is the admin talking
-        msg.setTo(self.jid)  # To me only
-        self.callback_message(self.conn, msg)
+        msg.frm = config.BOT_ADMINS[0]  # assume this is the admin talking
+        msg.to = self.jid  # To me only
+        self.callback_message(msg)
         self.app.input.clear()
 
     def build_message(self, text):
         txt, node = build_text_html_message_pair(text)
         msg = Message(txt, html=node) if node else Message(txt)
-        msg.setFrom(self.jid)
+        msg.frm = self.jid
         return msg  # rebuild a pure html snippet to include directly in the console html
 
     def serve_forever(self):
-        self.jid = 'Err@localhost'
         self.connect()  # be sure we are "connected" before the first command
         self.connect_callback()  # notify that the connection occured
 
@@ -239,9 +240,6 @@ class GraphicBackend(ErrBot):
         if not self.conn:
             self.conn = ConnectionMock()
         return self.conn
-
-    def join_room(self, room, username=None, password=None):
-        pass  # just ignore that
 
     @property
     def mode(self):

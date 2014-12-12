@@ -21,35 +21,28 @@ from platform import system
 
 py_version = sys.version_info[:2]
 PY2 = py_version[0] == 2
+PY3 = not PY2
 ON_WINDOWS = system() == 'Windows'
 
+if py_version < (2, 7):
+    raise RuntimeError('Err requires Python 2.7 or later')
+
+if PY3 and py_version < (3, 3):
+    raise RuntimeError('On Python 3, Err requires Python 3.3 or later')
+
+deps = ['webtest',
+        'setuptools',
+        'yapsy',
+        'bottle',
+        'requests',
+        'jinja2',
+        'pyOpenSSL',
+        'colorlog']
+
 if PY2:
-    if py_version < (2, 7):
-        raise RuntimeError(
-            'On Python 2, Err requires Python 2.7 or later')
-
-    deps = ['webtest',
-            'setuptools',
-            'yapsy',
-            'bottle',
-            'requests',
-            'jinja2',
-            'pyOpenSSL',
-            'dnspython',  # dnspython for SRV records
-            'config']
+    deps += ['dnspython', 'config']  # dnspython for SRV records
 else:
-    if py_version < (3, 3):
-        raise RuntimeError(
-            'On Python 3, Err requires Python 3.3 or later')
-
-    deps = ['webtest',
-            'setuptools',
-            'yapsy',
-            'bottle',
-            'requests',
-            'jinja2',
-            'pyOpenSSL',
-            'dnspython3']  # requests are for the unittests, dnspython for SRV records
+    deps += ['dnspython3']  # requests are for the unittests, dnspython for SRV records
 
 if not ON_WINDOWS:
     deps += ['daemonize']
@@ -69,7 +62,6 @@ def convert_to_python2():
 
         mainpip(['install', '3to2', '--no-clean'])
         from lib3to2 import main as three2two
-    import shutil
     import shlex
 
     for d in src_dirs:
@@ -92,16 +84,12 @@ if __name__ == "__main__":
     if changes.find(VERSION) == -1:
         raise Exception('You forgot to put a release note in CHANGES.rst ?!')
 
-    if set(sys.argv) & set(('bdist',
-                            'bdist_dumb',
-                            'bdist_rpm',
-                            'bdist_wininst',
-                            'bdist_msi')):
+    if set(sys.argv) & {'bdist', 'bdist_dumb', 'bdist_rpm', 'bdist_wininst', 'bdist_msi'}:
         raise Exception("err doesn't support binary distributions")
 
     # under python2 if we want to make a source distribution,
     # don't pre-convert the sources, leave them as py3.
-    if PY2 and 'install' in sys.argv or 'develop' in sys.argv:
+    if PY2 and ('install' in sys.argv or 'develop' in sys.argv):
         convert_to_python2()
 
     setup(

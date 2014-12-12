@@ -1,4 +1,4 @@
-from os import path, makedirs, sep, getcwd
+from os import path, makedirs, sep
 import logging
 
 
@@ -14,7 +14,6 @@ def main(bot_class, logger):
         hdlr = logging.FileHandler(BOT_LOG_FILE)
         hdlr.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
         logger.addHandler(hdlr)
-    logger.setLevel(BOT_LOG_LEVEL)
 
     if BOT_LOG_SENTRY:
         try:
@@ -32,12 +31,16 @@ def main(bot_class, logger):
         sentryhandler = SentryHandler(SENTRY_DSN, level=SENTRY_LOGLEVEL)
         logger.addHandler(sentryhandler)
 
+    logger.setLevel(BOT_LOG_LEVEL)
+
     # make the plugins subdir to store the plugin shelves
     d = BOT_DATA_DIR + sep + str(PLUGINS_SUBDIR)
     if not path.exists(d):
         makedirs(d, mode=0o755)
-
-    holder.bot = bot_class(**BOT_IDENTITY)
+    try:
+        holder.bot = bot_class(**BOT_IDENTITY)
+    except Exception:
+        logging.exception("Unable to configure the backend, please check if your config.py is correct.")
     errors = holder.bot.update_dynamic_plugins()
     if errors:
         logging.error('Some plugins failed to load:\n' + '\n'.join(errors))

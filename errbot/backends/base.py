@@ -1,13 +1,16 @@
-import inspect
-import logging
 import difflib
+import inspect
+import io
+import logging
 import traceback
+import warnings
+
 from collections import deque, defaultdict
 from xml.etree import cElementTree as ET
 from xml.etree.cElementTree import ParseError
 
 from errbot import botcmd, PY2
-from errbot.utils import get_sender_username, xhtml2txt, parse_jid, split_string_after
+from errbot.utils import get_sender_username, xhtml2txt, parse_jid, split_string_after, deprecated
 from errbot.templating import tenv
 from config import BOT_ADMINS, BOT_ASYNC, BOT_PREFIX, BOT_IDENTITY, CHATROOM_FN
 
@@ -69,7 +72,20 @@ if BOT_ASYNC:
 
 class ACLViolation(Exception):
     """Exceptions raised when user is not allowed to execute given command due to ACLs"""
-    pass
+
+
+class RoomError(Exception):
+    """General exception class for MUC-related errors"""
+
+
+class RoomNotJoinedError(RoomError):
+    """Exception raised when performing MUC operations
+    that require the bot to have joined the room"""
+
+
+class RoomDoesNotExistError(RoomError):
+    """Exception that is raised when performing an operation
+    on a room that doesn't exist"""
 
 
 class Identifier(object):
@@ -80,126 +96,581 @@ class Identifier(object):
 
     def __init__(self, jid=None, node='', domain='', resource=''):
         if jid:
-            self.node, self.domain, self.resource = parse_jid(jid)
+            self._node, self._domain, self._resource = parse_jid(jid)
         else:
-            self.node = node
-            self.domain = domain
-            self.resource = resource
+            self._node = node
+            self._domain = domain
+            self._resource = resource
 
-    def getNode(self):
-        return self.node
+    @property
+    def node(self):
+        return self._node
 
-    def getDomain(self):
-        return self.domain
+    @property
+    def domain(self):
+        return self._domain
 
-    def bareMatch(self, other):
-        return other.getStripped() == self.getStripped()
+    @property
+    def resource(self):
+        return self._resource
 
-    def getStripped(self):
-        if self.domain:
-            return self.node + '@' + self.domain
-        return self.node  # if the backend has no domain notion
+    @property
+    def stripped(self):
+        if self._domain:
+            return self._node + '@' + self._domain
+        return self._node  # if the backend has no domain notion
 
-    def getResource(self):
-        return self.resource
+    def bare_match(self, other):
+        """ checks if 2 identifiers are equal, ignoring the resource """
+        return other.stripped == self.stripped
 
     def __str__(self):
-        answer = self.getStripped()
-        if self.resource:
-            answer += '/' + self.resource
+        answer = self.stripped
+        if self._resource:
+            answer += '/' + self._resource
         return answer
 
     def __unicode__(self):
         return str(self.__str__())
 
+    # deprecated stuff ...
 
-class Presence(object):
-    """
-        An universal class representing protocol agnostic concept
-        of presence.
-    """
+    @deprecated(node)
+    def getNode(self):
+        """ will be removed on the next version """
 
-    def __init__(self, nick, room, real_id=None):
-        self.nick = nick
-        self.room = room
-        self.real_id = real_id
+    @deprecated(domain)
+    def getDomain(self):
+        """ will be removed on the next version """
 
-    def get_room(self):
-        return self.room
+    @deprecated(bare_match)
+    def bareMatch(self, other):
+        """ will be removed on the next version """
 
-    def get_nick(self):
-        return self.nick
+    @deprecated(stripped)
+    def getStripped(self):
+        """ will be removed on the next version """
 
-    def get_real_name(self):
-        return self.real_id
+    @deprecated(resource)
+    def getResource(self):
+        """ will be removed on the next version """
 
 
 class Message(object):
+    """
+    A chat message.
+
+    This class represents chat messages that are sent or received by
+    the bot. It is modeled after XMPP messages so not all methods
+    make sense in the context of other back-ends.
+    """
+
     fr = Identifier('unknown@localhost')
 
-    def __init__(self, body, typ='chat', html=None):
+    def __init__(self, body, type_='chat', html=None):
+        """
+        :param body:
+            The plaintext body of the message.
+        :param type_:
+            The type of message (generally one of either 'chat' or 'groupchat').
+        :param html:
+            An optional HTML representation of the body.
+        """
         # it is either unicode or assume it is utf-8
         if isinstance(body, str):
-            self.body = body
+            self._body = body
         else:
-            self.body = body.decode('utf-8')
-        self.html = html
-        self.typ = typ
-        self.delayed = False
-        self.mucknick = None
+            self._body = body.decode('utf-8')
+        self._html = html
+        self._type = type_
+        self._from = None
+        self._to = None
+        self._delayed = False
+        self._nick = None
 
-    def setTo(self, to):
+    @property
+    def to(self):
+        """
+        Get the recipient of the message.
+
+        :returns:
+            An :class:`~errbot.backends.base.Identifier` identifying
+            the recipient.
+        """
+        return self._to
+
+    @to.setter
+    def to(self, to):
+        """
+        Set the recipient of the message.
+
+        :param to:
+            An :class:`~errbot.backends.base.Identifier`, or string which may
+            be parsed as one, identifying the recipient.
+        """
         if isinstance(to, Identifier):
-            self.to = to
+            self._to = to
         else:
-            self.to = Identifier(to)  # assume a parseable string
+            self._to = Identifier(to)  # assume a parseable string
 
-    def getTo(self):
-        return self.to
+    @property
+    def type(self):
+        """
+        Get the type of the message.
 
-    def setType(self, typ):
-        self.typ = typ
+        :returns:
+            The message type as a string (generally one of either
+            'chat' or 'groupchat')
+        """
+        return self._type
 
-    def getType(self):
-        return self.typ
+    @type.setter
+    def type(self, type_):
+        """
+        Set the type of the message.
 
-    def getFrom(self):
-        return self.fr
+        :param type_:
+            The message type (generally one of either 'chat'
+            or 'groupchat').
+        """
+        self._type = type_
 
-    def setFrom(self, fr):
-        if isinstance(fr, Identifier):
-            self.fr = fr
+    @property
+    def frm(self):
+        """
+        Get the sender of the message.
+
+        :returns:
+            An :class:`~errbot.backends.base.Identifier` identifying
+            the sender.
+        """
+        return self._from
+
+    @frm.setter
+    def frm(self, from_):
+        """
+        Set the sender of the message.
+
+        :param from_:
+            An :class:`~errbot.backends.base.Identifier`, or string which may
+            be parsed as one, identifying the sender.
+        """
+        if isinstance(from_, Identifier):
+            self._from = from_
         else:
-            self.fr = Identifier(fr)  # assume a parseable string
+            self._from = Identifier(from_)  # assume a parseable string
 
-    def getBody(self):
-        return self.body
+    @property
+    def body(self):
+        """
+        Get the plaintext body of the message.
 
-    def getHTML(self):
-        return self.html
+        :returns:
+            The body as a string.
+        """
+        return self._body
 
-    def setHTML(self, html):
-        self.html = html
+    @property
+    def html(self):
+        """
+        Get the HTML representation of the message.
 
-    def setDelayed(self, delayed):
-        self.delayed = delayed
+        :returns:
+            A string containing the HTML message or `None` when there
+            is none.
+        """
+        return self._html
 
-    def isDelayed(self):
-        return self.delayed
+    @html.setter
+    def html(self, html):
+        """
+        Set the HTML representation of the message
 
-    def setMuckNick(self, nick):
-        self.mucknick = nick
+        :param html:
+            The HTML message.
+        """
+        self._html = html
 
-    def getMuckNick(self):
-        return self.mucknick
+    @property
+    def delayed(self):
+        return self._delayed
+
+    @delayed.setter
+    def delayed(self, delayed):
+        self._delayed = delayed
+
+    @property
+    def nick(self):
+        return self._nick
+
+    @nick.setter
+    def nick(self, nick):
+        self._nick = nick
 
     def __str__(self):
-        return self.body
+        return self._body
+
+    # deprecated stuff ...
+
+    @deprecated(to)
+    def getTo(self):
+        """ will be removed on the next version """
+
+    @deprecated(to.fset)
+    def setTo(self, to):
+        """ will be removed on the next version """
+
+    @deprecated(type)
+    def getType(self):
+        """ will be removed on the next version """
+
+    @deprecated(type.fset)
+    def setType(self, type_):
+        """ will be removed on the next version """
+
+    @deprecated(frm)
+    def getFrom(self):
+        """ will be removed on the next version """
+
+    @deprecated(frm.fset)
+    def setFrom(self, from_):
+        """ will be removed on the next version """
+
+    @deprecated(body)
+    def getBody(self):
+        """ will be removed on the next version """
+
+    @deprecated(html)
+    def getHTML(self):
+        """ will be removed on the next version """
+
+    @deprecated(html.fset)
+    def setHTML(self, html):
+        """ will be removed on the next version """
+
+    @deprecated(delayed)
+    def isDelayed(self):
+        """ will be removed on the next version """
+
+    @deprecated(delayed.fset)
+    def setDelayed(self, delayed):
+        """ will be removed on the next version """
+
+    @deprecated(nick)
+    def setMuckNick(self, nick):
+        """ will be removed on the next version """
+
+    @deprecated(nick.fset)
+    def getMuckNick(self):
+        """ will be removed on the next version """
+
+ONLINE = 'online'
+OFFLINE = 'offline'
+AWAY = 'away'
+DND = 'dnd'
 
 
-class Connection(object):
-    def send_message(self, mess):
+class Presence(object):
+    """
+       This class represents a presence change for a user or a user in a chatroom.
+
+       Instances of this class are passed to :meth:`~errbot.botplugin.BotPlugin.callback_presence`
+       when the presence of people changes.
+    """
+
+    def __init__(self, nick=None, identifier=None, status=None, chatroom=None, message=None):
+        if nick is None and identifier is None:
+            raise ValueError('Presence: nick and identifiers are both None')
+        if nick is None and chatroom is not None:
+            raise ValueError('Presence: nick is None when chatroom is not')
+        if status is None and message is None:
+            raise ValueError('Presence: at least a new status or a new status message mustbe present')
+        self._nick = nick
+        self._identifier = identifier
+        self._chatroom = chatroom
+        self._status = status
+        self._message = message
+
+    @property
+    def chatroom(self):
+        """ Returns the Identifier pointing the room in which the event occurred.
+            If it returns None, the event occurred outside of a chatroom.
+        """
+        return self._chatroom
+
+    @property
+    def nick(self):
+        """ Returns a plain string of the presence nick.
+            (In some chatroom implementations, you cannot know the real identifier
+            of a person in it).
+            Can return None but then identifier won't be None.
+        """
+        return self._nick
+
+    @property
+    def identifier(self):
+        """ Returns the identifier of the event.
+            Can be None *only* if chatroom is not None
+        """
+        return self._identifier
+
+    @property
+    def status(self):
+        """ Returns the status of the presence change.
+            It can be one of the constants ONLINE, OFFLINE, AWAY, DND, but
+            can also be custom statuses depending on backends.
+            It can be None if it is just an update of the status message (see get_message)
+        """
+        return self._status
+
+    @property
+    def message(self):
+        """ Returns a human readable message associated with the status if any.
+            like : "BRB, washing the dishes"
+            It can be None if it is only a general status update (see get_status)
+        """
+        return self._message
+
+    def __str__(self):
+        response = ''
+        if self._nick:
+            response += 'Nick:%s ' % self._nick
+        if self._identifier:
+            response += 'Idd:%s ' % self._identifier
+        if self._status:
+            response += 'Status:%s ' % self._status
+        if self._chatroom:
+            response += 'Room:%s ' % self._chatroom
+        if self._message:
+            response += 'Msg:%s ' % self._message
+        return response
+
+    def __unicode__(self):
+        return str(self.__str__())
+
+STREAM_WAITING_TO_START = 'pending'
+STREAM_TRANSFER_IN_PROGRESS = 'in progress'
+STREAM_SUCCESSFULLY_TRANSFERED = 'success'
+STREAM_PAUSED = 'paused'
+STREAM_ERROR = 'error'
+STREAM_REJECTED = 'rejected'
+
+DEFAULT_REASON = 'unknown'
+
+
+class Stream(io.BufferedReader):
+    """
+       This class represents a stream request.
+
+       Instances of this class are passed to :meth:`~errbot.botplugin.BotPlugin.callback_stream`
+       when an incoming stream is requested.
+    """
+
+    def __init__(self, identifier, fsource, name=None, size=None, stream_type=None):
+        super(Stream, self).__init__(fsource)
+        self._identifier = identifier
+        self._name = name
+        self._size = size
+        self._stream_type = stream_type
+        self._status = STREAM_WAITING_TO_START
+        self._reason = DEFAULT_REASON
+
+    @property
+    def identifier(self):
+        """
+           The identity the stream is coming from if it is an incoming request
+           or to if it is an outgoing request.
+        """
+        return self._identifier
+
+    @property
+    def name(self):
+        """
+            The name of the stream/file if it has one or None otherwise.
+            !! Be carefull of injections if you are using this name directly as a filename.
+        """
+        return self._name
+
+    @property
+    def size(self):
+        """
+            The expected size in bytes of the stream if it is known or None.
+        """
+        return self._size
+
+    @property
+    def stream_type(self):
+        """
+            The mimetype of the stream if it is known or None.
+        """
+        return self._stream_type
+
+    @property
+    def status(self):
+        """
+            The status for this stream.
+        """
+        return self._status
+
+    def accept(self):
+        """
+            Signal that the stream has been accepted.
+        """
+        if self._status != STREAM_WAITING_TO_START:
+            raise ValueError("Invalid state, the stream is not pending.")
+        self._status = STREAM_TRANSFER_IN_PROGRESS
+
+    def reject(self):
+        """
+            Signal that the stream has been rejected.
+        """
+        if self._status != STREAM_WAITING_TO_START:
+            raise ValueError("Invalid state, the stream is not pending.")
+        self._status = STREAM_REJECTED
+
+    def error(self, reason=DEFAULT_REASON):
+        """
+            An internal plugin error prevented the transfer.
+        """
+        self._status = STREAM_ERROR
+        self._reason = reason
+
+    def success(self):
+        """
+            The streaming finished normally.
+        """
+        if self._status != STREAM_TRANSFER_IN_PROGRESS:
+            raise ValueError("Invalid state, the stream is not in progress.")
+        self._status = STREAM_SUCCESSFULLY_TRANSFERED
+
+    def clone(self, new_fsource):
+        """
+            Creates a clone and with an alternative stream
+        """
+        return Stream(self._identifier, new_fsource, self._name, self._size, self._stream_type)
+
+
+class MUCRoom(Identifier):
+    """
+    This class represents a Multi-User Chatroom.
+    """
+
+    def join(self, username=None, password=None):
+        """
+        Join the room.
+
+        If the room does not exist yet, this will automatically call
+        :meth:`create` on it first.
+        """
         raise NotImplementedError("It should be implemented specifically for your backend")
+
+    def leave(self, reason=None):
+        """
+        Leave the room.
+
+        :param reason:
+            An optional string explaining the reason for leaving the room.
+        """
+        raise NotImplementedError("It should be implemented specifically for your backend")
+
+    def create(self):
+        """
+        Create the room.
+
+        Calling this on an already existing room is a no-op.
+        """
+        raise NotImplementedError("It should be implemented specifically for your backend")
+
+    def destroy(self):
+        """
+        Destroy the room.
+
+        Calling this on a non-existing room is a no-op.
+        """
+        raise NotImplementedError("It should be implemented specifically for your backend")
+
+    @property
+    def exists(self):
+        """
+        Boolean indicating whether this room already exists or not.
+
+        :getter:
+            Returns `True` if the room exists, `False` otherwise.
+        """
+        raise NotImplementedError("It should be implemented specifically for your backend")
+
+    @property
+    def joined(self):
+        """
+        Boolean indicating whether this room has already been joined.
+
+        :getter:
+            Returns `True` if the room has been joined, `False` otherwise.
+        """
+        raise NotImplementedError("It should be implemented specifically for your backend")
+
+    @property
+    def topic(self):
+        """
+        The room topic.
+
+        :getter:
+            Returns the topic (a string) if one is set, `None` if no
+            topic has been set at all.
+
+            .. note::
+                Back-ends may return an empty string rather than `None`
+                when no topic has been set as a network may not
+                differentiate between no topic and an empty topic.
+        :raises:
+            :class:`~MUCNotJoinedError` if the room has not yet been joined.
+
+        """
+        raise NotImplementedError("It should be implemented specifically for your backend")
+
+    def set_topic(self, topic):
+        """
+        Set the room's topic.
+
+        :param topic:
+            The topic to set.
+        """
+        raise NotImplementedError("It should be implemented specifically for your backend")
+
+    @property
+    def occupants(self):
+        """
+        The room's occupants.
+
+        :getter:
+            Returns a list of :class:`~errbot.backends.base.MUCOccupant` instances.
+        :raises:
+            :class:`~MUCNotJoinedError` if the room has not yet been joined.
+        """
+        raise NotImplementedError("It should be implemented specifically for your backend")
+
+    def invite(self, *args):
+        """
+        Invite one or more people into the room.
+
+        :*args:
+            One or more JID's to invite into the room.
+        """
+        raise NotImplementedError("It should be implemented specifically for your backend")
+
+
+class MUCOccupant(Identifier):
+    """
+    This class represents a person inside a MUC.
+
+    This class exists to expose additional information about occupants
+    inside a MUC. For example, the XMPP back-end may expose backend-specific
+    information such as the real JID of the occupant and whether or not
+    that person is a moderator or owner of the room.
+
+    See the parent class for additional details.
+    """
+    pass
 
 
 def build_text_html_message_pair(source):
@@ -231,7 +702,7 @@ def build_message(text, message_class, conversion_function=None):
         try:
             text_plain, node = build_text_html_message_pair(edulcorated_html)
             message = message_class(body=text_plain)
-            message.setHTML(node)
+            message.html = node
         except ET.ParseError as ee:
             logging.error('Error translating to hipchat [%s] Parsing error = [%s]' % (edulcorated_html, ee))
     except ET.ParseError as ee:
@@ -273,8 +744,7 @@ class Backend(object):
             self.bot_alt_prefixes = BOT_ALT_PREFIXES
 
     def send_message(self, mess):
-        """Send a message"""
-        self.connect().send_message(mess)
+        """Should be overridden by backends"""
 
     def send_simple_reply(self, mess, text, private=False):
         """Send a simple response to a message"""
@@ -283,44 +753,68 @@ class Backend(object):
     def build_reply(self, mess, text=None, private=False):
         """Build a message for responding to another message.
         Message is NOT sent"""
+        msg_type = mess.type
         response = self.build_message(text)
-        msg_type = mess.getType()
 
-        response.setFrom(self.jid)
+        response.frm = self.jid
         if msg_type == 'groupchat' and not private:
-            # getStripped() returns the full bot@conference.domain.tld/chat_username
+            # stripped returns the full bot@conference.domain.tld/chat_username
             # but in case of a groupchat, we should only try to send to the MUC address
             # itself (bot@conference.domain.tld)
-            response.setTo(mess.getFrom().getStripped().split('/')[0])
-        elif str(mess.getTo()) == BOT_IDENTITY['username']:
+            response.to = mess.frm.stripped.split('/')[0]
+        elif str(mess.to) == BOT_IDENTITY['username']:
             # This is a direct private message, not initiated through a MUC. Use
-            # getStripped() to remove the resource so that the response goes to the
+            # stripped to remove the resource so that the response goes to the
             # client with the highest priority
-            response.setTo(mess.getFrom().getStripped())
+            response.to = mess.frm.stripped
         else:
             # This is a private message that was initiated through a MUC. Don't use
-            # getStripped() here to retain the resource, else the XMPP server doesn't
+            # stripped here to retain the resource, else the XMPP server doesn't
             # know which user we're actually responding to.
-            response.setTo(mess.getFrom())
-        response.setType('chat' if private else msg_type)
+            response.to = mess.frm
+        response.type = 'chat' if private else msg_type
         return response
 
-    def callback_message(self, conn, mess):
+    def callback_presence(self, presence):
+        """
+           Implemented by errBot.
+        """
+        pass
+
+    def callback_room_joined(self, room):
+        """
+            See :class:`~errbot.errBot.ErrBot`
+        """
+        pass
+
+    def callback_room_left(self, room):
+        """
+            See :class:`~errbot.errBot.ErrBot`
+        """
+        pass
+
+    def callback_room_topic(self, room):
+        """
+            See :class:`~errbot.errBot.ErrBot`
+        """
+        pass
+
+    def callback_message(self, mess):
         """
         Needs to return False if we want to stop further treatment
         """
         # Prepare to handle either private chats or group chats
-        type = mess.getType()
-        jid = mess.getFrom()
-        text = mess.getBody()
+        type_ = mess.type
+        jid = mess.frm
+        text = mess.body
         username = get_sender_username(mess)
         user_cmd_history = self.cmd_history[username]
 
-        if mess.isDelayed():
+        if mess.delayed:
             logging.debug("Message from history, ignore it")
             return False
 
-        if type not in ("groupchat", "chat"):
+        if type_ not in ("groupchat", "chat"):
             logging.debug("unhandled message type %s" % mess)
             return False
 
@@ -330,14 +824,14 @@ class Backend(object):
         # background discussion on this). Matching against CHATROOM_FN isn't technically
         # correct in all cases because a MUC could give us another nickname, but it
         # covers 99% of the MUC cases, so it should suffice for the time being.
-        if (jid.bareMatch(Identifier(self.jid)) or
-            type == "groupchat" and mess.getMuckNick() == CHATROOM_FN):  # noqa
+        if (jid.bare_match(self.jid) or
+            type_ == "groupchat" and mess.nick == CHATROOM_FN):  # noqa
                 logging.debug("Ignoring message from self")
                 return False
 
         logging.debug("*** jid = %s" % jid)
         logging.debug("*** username = %s" % username)
-        logging.debug("*** type = %s" % type)
+        logging.debug("*** type = %s" % type_)
         logging.debug("*** text = %s" % text)
 
         # If a message format is not supported (eg. encrypted),
@@ -371,7 +865,7 @@ class Backend(object):
                 l = len(sep)
                 if text[:l] == sep:
                     text = text[l:]
-        elif type == "chat" and BOT_PREFIX_OPTIONAL_ON_CHAT:
+        elif type_ == "chat" and BOT_PREFIX_OPTIONAL_ON_CHAT:
             logging.debug("Assuming '%s' to be a command because BOT_PREFIX_OPTIONAL_ON_CHAT is True" % text)
             # In order to keep noise down we surpress messages about the command
             # not being found, because it's possible a plugin will trigger on what
@@ -425,7 +919,10 @@ class Backend(object):
                             if not self.re_commands[k]._err_command_prefix_required}
 
             for name, func in commands.items():
-                match = func._err_command_re_pattern.search(text)
+                if func._err_command_matchall:
+                    match = list(func._err_command_re_pattern.finditer(text))
+                else:
+                    match = func._err_command_re_pattern.search(text)
                 if match:
                     logging.debug("Matching '{}' against '{}' produced a match"
                                   .format(text, func._err_command_re_pattern.pattern))
@@ -455,7 +952,7 @@ class Backend(object):
         """Process and execute a bot command"""
         logging.info("Processing command {} with parameters '{}'".format(cmd, args))
 
-        jid = mess.getFrom()
+        jid = mess.frm
         username = get_sender_username(mess)
         user_cmd_history = self.cmd_history[username]
 
@@ -479,10 +976,23 @@ class Backend(object):
         if f._err_command_historize:
             user_cmd_history.append((cmd, args))  # add it to the history only if it is authorized to be so
 
-        # Don't check for None here as None can be a valid argument to split.
-        # '' was chosen as default argument because this isn't a valid argument to split()
+        # Don't check for None here as None can be a valid argument to str.split.
+        # '' was chosen as default argument because this isn't a valid argument to str.split()
         if not match and f._err_command_split_args_with != '':
-            args = args.split(f._err_command_split_args_with)
+            try:
+                if hasattr(f._err_command_split_args_with, "parse_args"):
+                    args = f._err_command_split_args_with.parse_args(args)
+                elif callable(f._err_command_split_args_with):
+                    args = f._err_command_split_args_with(args)
+                else:
+                    args = args.split(f._err_command_split_args_with)
+            except Exception as e:
+                self.send_simple_reply(
+                    mess,
+                    "Sorry, I couldn't parse your arguments. {}".format(e)
+                )
+                return
+
         if BOT_ASYNC:
             wr = WorkRequest(
                 self._execute_and_send,
@@ -512,16 +1022,16 @@ class Backend(object):
 
         """
 
-        def process_reply(reply):
+        def process_reply(reply_):
             # integrated templating
             if template_name:
-                reply = tenv().get_template(template_name + '.html').render(**reply)
+                reply_ = tenv().get_template(template_name + '.html').render(**reply_)
 
             # Reply should be all text at this point (See https://github.com/gbin/err/issues/96)
-            return str(reply)
+            return str(reply_)
 
-        def send_reply(reply):
-            for part in split_string_after(reply, self.MESSAGE_SIZE_LIMIT):
+        def send_reply(reply_):
+            for part in split_string_after(reply_, self.MESSAGE_SIZE_LIMIT):
                 self.send_simple_reply(mess, part, cmd in DIVERT_TO_PRIVATE)
 
         commands = self.re_commands if match else self.commands
@@ -539,8 +1049,14 @@ class Backend(object):
             tb = traceback.format_exc()
             logging.exception('An error happened while processing '
                               'a message ("%s") from %s: %s"' %
-                              (mess.getBody(), jid, tb))
+                              (mess.body, jid, tb))
             send_reply(self.MSG_ERROR_OCCURRED + ':\n %s' % e)
+
+    def is_admin(self, usr):
+        """
+        an overridable check to see if a user is an administrator
+        """
+        return usr in BOT_ADMINS
 
     def check_command_access(self, mess, cmd):
         """
@@ -549,7 +1065,7 @@ class Backend(object):
         Raises ACLViolation() if the command may not be executed in the given context
         """
         usr = str(get_jid_from_message(mess))
-        typ = mess.getType()
+        typ = mess.type
 
         if cmd not in ACCESS_CONTROLS:
             ACCESS_CONTROLS[cmd] = ACCESS_CONTROLS_DEFAULT
@@ -559,7 +1075,7 @@ class Backend(object):
         if 'denyusers' in ACCESS_CONTROLS[cmd] and usr in ACCESS_CONTROLS[cmd]['denyusers']:
             raise ACLViolation("You're not allowed to access this command from this user")
         if typ == 'groupchat':
-            stripped = mess.getFrom().getStripped()
+            stripped = mess.frm.stripped
             if 'allowmuc' in ACCESS_CONTROLS[cmd] and ACCESS_CONTROLS[cmd]['allowmuc'] is False:
                 raise ACLViolation("You're not allowed to access this command from a chatroom")
             if 'allowrooms' in ACCESS_CONTROLS[cmd] and stripped not in ACCESS_CONTROLS[cmd]['allowrooms']:
@@ -575,10 +1091,10 @@ class Backend(object):
         if f._err_command_admin_only:
             if typ == 'groupchat':
                 raise ACLViolation("You cannot administer the bot from a chatroom, message the bot directly")
-            if usr not in BOT_ADMINS:
+            if not self.is_admin(usr):
                 raise ACLViolation("This command requires bot-admin privileges")
 
-    def unknown_command(self, mess, cmd, args):
+    def unknown_command(self, _, cmd, args):
         """ Override the default unknown command behavior
         """
         full_cmd = cmd + ' ' + args.split(' ')[0] if args else None
@@ -663,7 +1179,7 @@ class Backend(object):
             usage = '\n'.join(sorted([
                 BOT_PREFIX + '%s: %s' % (name, (command.__doc__ or
                                                 '(undocumented)').strip().split('\n', 1)[0])
-                for (name, command) in self.commands.iteritems()
+                for (name, command) in self.commands.items()
                 if name != 'help'
                 and not command._err_command_hidden
             ]))
@@ -683,17 +1199,17 @@ class Backend(object):
     def send(self, user, text, in_reply_to=None, message_type='chat'):
         """Sends a simple message to the specified user."""
         mess = self.build_message(text)
-        if hasattr(user, 'getStripped'):
-            mess.setTo(user.getStripped())
+        if hasattr(user, 'stripped'):
+            mess.to = user.stripped
         else:
-            mess.setTo(user)
+            mess.to = user
 
         if in_reply_to:
-            mess.setType(in_reply_to.getType())
-            mess.setFrom(in_reply_to.getTo().getStripped())
+            mess.type = in_reply_to.type
+            mess.frm = in_reply_to.to.stripped
         else:
-            mess.setType(message_type)
-            mess.setFrom(self.jid)
+            mess.type = message_type
+            mess.frm = self.jid
 
         self.send_message(mess)
 
@@ -711,6 +1227,35 @@ class Backend(object):
         raise NotImplementedError("It should be implemented specifically for your backend")
 
     def join_room(self, room, username=None, password=None):
+        """
+        Join a room (MUC).
+
+        :param room:
+            The JID/identifier of the room to join.
+        :param username:
+            An optional username to use.
+        :param password:
+            An optional password to use (for password-protected rooms).
+
+        .. deprecated:: 2.2.0
+            Use the methods on :class:`MUCRoom` instead.
+        """
+        warnings.warn(
+            "Using join_room is deprecated, use query_room and the join "
+            "method on the resulting response instead.",
+            DeprecationWarning
+        )
+        self.query_room(room).join(username=username, password=password)
+
+    def query_room(self, room):
+        """
+        Query a room for information.
+
+        :param room:
+            The JID/identifier of the room to query for.
+        :returns:
+            An instance of :class:`~MUCRoom`.
+        """
         raise NotImplementedError("It should be implemented specifically for your backend")
 
     def shutdown(self):
@@ -722,27 +1267,24 @@ class Backend(object):
     def disconnect_callback(self):
         pass
 
-    def callback_contact_online(self, conn, pres):
-        pass
-
-    def callback_contact_offline(self, conn, pres):
-        pass
-
-    def callback_user_joined_chat(self, conn, pres):
-        pass
-
-    def callback_user_left_chat(self, conn, pres):
-        pass
-
     @property
     def mode(self):
         raise NotImplementedError("It should be implemented specifically for your backend")
 
+    def rooms(self):
+        """
+        Return a list of rooms the bot is currently in.
+
+        :returns:
+            A list of :class:`~errbot.backends.base.MUCRoom` instances.
+        """
+        raise NotImplementedError("It should be implemented specifically for your backend")
+
 
 def get_jid_from_message(mess):
-    if mess.getType() == 'chat':
+    if mess.type == 'chat':
         # strip the resource for direct chats
-        return str(mess.getFrom().getStripped())
-    fr = mess.getFrom()
+        return mess.frm.stripped
+    fr = mess.frm
     jid = Identifier(node=fr.node, domain=fr.domain, resource=fr.resource)
     return jid

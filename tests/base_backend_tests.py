@@ -29,7 +29,7 @@ LONG_TEXT_STRING = "This is a relatively long line of output, but I am repeated 
 
 class DummyBackend(Backend):
     outgoing_message_queue = Queue()
-    jid = 'err@localhost/err'
+    jid = Identifier('err@localhost/err')
 
     def build_message(self, text):
         return build_message(text, Message)
@@ -64,6 +64,10 @@ class DummyBackend(Backend):
     def double_regex_command_two(self, mess, match):
         return "two"
 
+    @re_botcmd(pattern=r'match_here', matchall=True)
+    def regex_command_with_matchall(self, mess, matches):
+        return len(matches)
+
     @botcmd
     def return_args_as_str(self, mess, args):
         return "".join(args)
@@ -88,8 +92,8 @@ class DummyBackend(Backend):
 
     @botcmd
     def yields_str_then_raises_exception(self, mess, args):
-        yield "foobar"
-        raise Exception("Kaboom!")
+        yield 'foobar'
+        raise Exception('Kaboom!')
 
     @botcmd
     def return_long_output(self, mess, args):
@@ -104,6 +108,10 @@ class DummyBackend(Backend):
     def mode(self):
         return "Dummy"
 
+    @property
+    def rooms(self):
+        return []
+
     def __init__(self):
         super(DummyBackend, self).__init__()
         self.inject_commands_from(self)
@@ -114,26 +122,26 @@ class TestBase(unittest.TestCase):
         self.dummy = DummyBackend()
 
     def test_identifier_parsing(self):
-        id1 = Identifier(jid="gbin@gootz.net/toto")
-        self.assertEqual(id1.getNode(), "gbin")
-        self.assertEqual(id1.getDomain(), "gootz.net")
-        self.assertEqual(id1.getResource(), "toto")
+        id1 = Identifier(jid='gbin@gootz.net/toto')
+        self.assertEqual(id1.node, 'gbin')
+        self.assertEqual(id1.domain, 'gootz.net')
+        self.assertEqual(id1.resource, 'toto')
 
-        id2 = Identifier(jid="gbin@gootz.net")
-        self.assertEqual(id2.getNode(), "gbin")
-        self.assertEqual(id2.getDomain(), "gootz.net")
-        self.assertIsNone(id2.getResource())
+        id2 = Identifier(jid='gbin@gootz.net')
+        self.assertEqual(id2.node, 'gbin')
+        self.assertEqual(id2.domain, 'gootz.net')
+        self.assertIsNone(id2.resource)
 
     def test_identifier_matching(self):
-        id1 = Identifier(jid="gbin@gootz.net/toto")
-        id2 = Identifier(jid="gbin@gootz.net/titi")
-        id3 = Identifier(jid="gbin@giitz.net/titi")
-        self.assertTrue(id1.bareMatch(id2))
-        self.assertFalse(id2.bareMatch(id3))
+        id1 = Identifier(jid='gbin@gootz.net/toto')
+        id2 = Identifier(jid='gbin@gootz.net/titi')
+        id3 = Identifier(jid='gbin@giitz.net/titi')
+        self.assertTrue(id1.bare_match(id2))
+        self.assertFalse(id2.bare_match(id3))
 
     def test_identifier_stripping(self):
-        id1 = Identifier(jid="gbin@gootz.net/toto")
-        self.assertEqual(id1.getStripped(), "gbin@gootz.net")
+        id1 = Identifier(jid='gbin@gootz.net/toto')
+        self.assertEqual(id1.stripped, 'gbin@gootz.net')
 
     def test_identifier_str_rep(self):
         self.assertEqual(str(Identifier(jid="gbin@gootz.net/toto")), "gbin@gootz.net/toto")
@@ -143,39 +151,39 @@ class TestBase(unittest.TestCase):
         self.assertEqual(str(Identifier(jid="gbin@gootz.net/へようこそ")), "gbin@gootz.net/へようこそ")
 
     def test_xhtmlparsing_and_textify(self):
-        text_plain, node = build_text_html_message_pair("<html><body>Message</body></html>")
-        self.assertEqual(text_plain, "Message")
-        self.assertEqual(node.tag, "html")
-        self.assertEqual(node.getchildren()[0].tag, "body")
+        text_plain, node = build_text_html_message_pair('<html><body>Message</body></html>')
+        self.assertEqual(text_plain, 'Message')
+        self.assertEqual(node.tag, 'html')
+        self.assertEqual(node.getchildren()[0].tag, 'body')
         self.assertEqual(node.getchildren()[0].text, 'Message')
 
     def test_identifier_double_at_parsing(self):
-        id1 = Identifier(jid="gbin@titi.net@gootz.net/toto")
-        self.assertEqual(id1.getNode(), "gbin@titi.net")
-        self.assertEqual(id1.getDomain(), "gootz.net")
-        self.assertEqual(id1.getResource(), "toto")
+        id1 = Identifier(jid='gbin@titi.net@gootz.net/toto')
+        self.assertEqual(id1.node, 'gbin@titi.net')
+        self.assertEqual(id1.domain, 'gootz.net')
+        self.assertEqual(id1.resource, 'toto')
 
     def test_buildreply(self):
         dummy = self.dummy
 
-        m = dummy.build_message("Content")
-        m.setFrom("from@fromdomain.net/fromresource")
-        m.setTo("to@todomain.net/toresource")
-        resp = dummy.build_reply(m, "Response")
+        m = dummy.build_message('Content')
+        m.frm = 'from@fromdomain.net/fromresource'
+        m.to = 'to@todomain.net/toresource'
+        resp = dummy.build_reply(m, 'Response')
 
-        self.assertEqual(str(resp.getTo()), "from@fromdomain.net/fromresource")
-        self.assertEqual(str(resp.getFrom()), "err@localhost/err")
-        self.assertEqual(str(resp.getBody()), "Response")
+        self.assertEqual(str(resp.to), 'from@fromdomain.net/fromresource')
+        self.assertEqual(str(resp.frm), 'err@localhost/err')
+        self.assertEqual(str(resp.body), 'Response')
 
 
 class TestExecuteAndSend(unittest.TestCase):
     def setUp(self):
         self.dummy = DummyBackend()
-        self.example_message = self.dummy.build_message("some_message")
-        self.example_message.setFrom("noterr@localhost/resource")
-        self.example_message.setTo("err@localhost/resource")
+        self.example_message = self.dummy.build_message('some_message')
+        self.example_message.frm = 'noterr@localhost/resource'
+        self.example_message.to = 'err@localhost/resource'
 
-        assets_path = os.path.dirname(__file__) + os.sep + "assets"
+        assets_path = os.path.join(os.path.dirname(__file__), 'assets')
         templating.template_path.append(templating.make_templates_path(assets_path))
         templating.env = templating.Environment(loader=templating.FileSystemLoader(templating.template_path))
 
@@ -185,7 +193,7 @@ class TestExecuteAndSend(unittest.TestCase):
 
         dummy._execute_and_send(cmd='return_args_as_str', args=['foo', 'bar'], match=None, mess=m,
                                 jid='noterr@localhost', template_name=dummy.return_args_as_str._err_command_template)
-        self.assertEqual("foobar", dummy.pop_message().getBody())
+        self.assertEqual("foobar", dummy.pop_message().body)
 
     def test_commands_can_return_html(self):
         dummy = self.dummy
@@ -194,7 +202,7 @@ class TestExecuteAndSend(unittest.TestCase):
         dummy._execute_and_send(cmd='return_args_as_html', args=['foo', 'bar'], match=None, mess=m,
                                 jid='noterr@localhost', template_name=dummy.return_args_as_html._err_command_template)
         response = dummy.pop_message()
-        self.assertEqual("foobar", response.getBody())
+        self.assertEqual("foobar", response.body)
         self.assertEqual('<strong xmlns:ns0="http://jabber.org/protocol/xhtml-im">foo</strong>'
                          '<em xmlns:ns0="http://jabber.org/protocol/xhtml-im">bar</em>\n\n',
                          mess_2_embeddablehtml(response)[0])
@@ -205,13 +213,13 @@ class TestExecuteAndSend(unittest.TestCase):
 
         dummy._execute_and_send(cmd='raises_exception', args=[], match=None, mess=m, jid='noterr@localhost',
                                 template_name=dummy.raises_exception._err_command_template)
-        self.assertIn(dummy.MSG_ERROR_OCCURRED, dummy.pop_message().getBody())
+        self.assertIn(dummy.MSG_ERROR_OCCURRED, dummy.pop_message().body)
 
         dummy._execute_and_send(cmd='yields_str_then_raises_exception', args=[], match=None, mess=m,
                                 jid='noterr@localhost',
                                 template_name=dummy.yields_str_then_raises_exception._err_command_template)
-        self.assertEqual("foobar", dummy.pop_message().getBody())
-        self.assertIn(dummy.MSG_ERROR_OCCURRED, dummy.pop_message().getBody())
+        self.assertEqual("foobar", dummy.pop_message().body)
+        self.assertIn(dummy.MSG_ERROR_OCCURRED, dummy.pop_message().body)
 
     def test_commands_can_yield_strings(self):
         dummy = self.dummy
@@ -219,8 +227,8 @@ class TestExecuteAndSend(unittest.TestCase):
 
         dummy._execute_and_send(cmd='yield_args_as_str', args=['foo', 'bar'], match=None, mess=m,
                                 jid='noterr@localhost', template_name=dummy.yield_args_as_str._err_command_template)
-        self.assertEqual("foo", dummy.pop_message().getBody())
-        self.assertEqual("bar", dummy.pop_message().getBody())
+        self.assertEqual("foo", dummy.pop_message().body)
+        self.assertEqual("bar", dummy.pop_message().body)
 
     def test_commands_can_yield_html(self):
         dummy = self.dummy
@@ -230,10 +238,10 @@ class TestExecuteAndSend(unittest.TestCase):
                                 jid='noterr@localhost', template_name=dummy.yield_args_as_html._err_command_template)
         response1 = dummy.pop_message()
         response2 = dummy.pop_message()
-        self.assertEqual("foo", response1.getBody())
+        self.assertEqual("foo", response1.body)
         self.assertEqual('<strong xmlns:ns0="http://jabber.org/protocol/xhtml-im">foo</strong>\n\n',
                          mess_2_embeddablehtml(response1)[0])
-        self.assertEqual("bar", response2.getBody())
+        self.assertEqual("bar", response2.body)
         self.assertEqual('<strong xmlns:ns0="http://jabber.org/protocol/xhtml-im">bar</strong>\n\n',
                          mess_2_embeddablehtml(response2)[0])
 
@@ -245,7 +253,7 @@ class TestExecuteAndSend(unittest.TestCase):
         dummy._execute_and_send(cmd='return_long_output', args=['foo', 'bar'], match=None, mess=m,
                                 jid='noterr@localhost', template_name=dummy.return_long_output._err_command_template)
         for i in range(3):  # return_long_output outputs a string that's 3x longer than the size limit
-            self.assertEqual(LONG_TEXT_STRING, dummy.pop_message().getBody())
+            self.assertEqual(LONG_TEXT_STRING, dummy.pop_message().body)
         self.assertRaises(Empty, dummy.pop_message, *[], **{'block': False})
 
     def test_output_longer_than_max_message_size_is_split_into_multiple_messages_when_yielded(self):
@@ -256,7 +264,7 @@ class TestExecuteAndSend(unittest.TestCase):
         dummy._execute_and_send(cmd='yield_long_output', args=['foo', 'bar'], match=None, mess=m,
                                 jid='noterr@localhost', template_name=dummy.yield_long_output._err_command_template)
         for i in range(6):  # yields_long_output yields 2 strings that are 3x longer than the size limit
-            self.assertEqual(LONG_TEXT_STRING, dummy.pop_message().getBody())
+            self.assertEqual(LONG_TEXT_STRING, dummy.pop_message().body)
         self.assertRaises(Empty, dummy.pop_message, *[], **{'block': False})
 
 
@@ -266,9 +274,9 @@ class BotCmds(unittest.TestCase):
 
     def makemessage(self, message, from_="noterr@localhost/resource", to="noterr@localhost/resource", type="chat"):
         m = self.dummy.build_message(message)
-        m.setFrom(from_)
-        m.setTo(to)
-        m.setType(type)
+        m.frm = from_
+        m.to = to
+        m.type = type
         return m
 
     def test_inject_skips_methods_without_botcmd_decorator(self):
@@ -285,79 +293,83 @@ class BotCmds(unittest.TestCase):
         self.assertFalse(len(self.dummy.re_commands))
 
     def test_callback_message(self):
-        self.dummy.callback_message(None, self.makemessage("!return_args_as_str one two"))
-        self.assertEquals("one two", self.dummy.pop_message().getBody())
+        self.dummy.callback_message(self.makemessage("!return_args_as_str one two"))
+        self.assertEquals("one two", self.dummy.pop_message().body)
 
     @patch('errbot.backends.base.BOT_PREFIX_OPTIONAL_ON_CHAT', new=True)
     def test_callback_message_with_prefix_optional(self):
         m = self.makemessage("return_args_as_str one two")
-        self.dummy.callback_message(None, m)
-        self.assertEquals("one two", self.dummy.pop_message().getBody())
+        self.dummy.callback_message(m)
+        self.assertEquals("one two", self.dummy.pop_message().body)
 
         # Groupchat should still require the prefix
-        m.setType("groupchat")
-        self.dummy.callback_message(None, m)
+        m.type = "groupchat"
+        self.dummy.callback_message(m)
         self.assertRaises(Empty, self.dummy.pop_message, *[], **{'block': False})
 
         m = self.makemessage("!return_args_as_str one two", type="groupchat")
-        self.dummy.callback_message(None, m)
-        self.assertEquals("one two", self.dummy.pop_message().getBody())
+        self.dummy.callback_message(m)
+        self.assertEquals("one two", self.dummy.pop_message().body)
 
     @patch('errbot.backends.base.BOT_ALT_PREFIXES', new=('Err',))
     @patch('errbot.backends.base.BOT_ALT_PREFIX_SEPARATORS', new=(',', ';'))
     def test_callback_message_with_bot_alt_prefixes(self):
         self.dummy = DummyBackend()
-        self.dummy.callback_message(None, self.makemessage("Err return_args_as_str one two"))
-        self.assertEquals("one two", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage("Err, return_args_as_str one two"))
-        self.assertEquals("one two", self.dummy.pop_message().getBody())
+        self.dummy.callback_message(self.makemessage("Err return_args_as_str one two"))
+        self.assertEquals("one two", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("Err, return_args_as_str one two"))
+        self.assertEquals("one two", self.dummy.pop_message().body)
 
     def test_callback_message_with_re_botcmd(self):
-        self.dummy.callback_message(None, self.makemessage("!regex command with prefix"))
-        self.assertEquals("Regex command", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage("regex command without prefix"))
-        self.assertEquals("Regex command", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage("!regex command with capture group: Captured text"))
-        self.assertEquals("Captured text", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage("regex command with capture group: Captured text"))
-        self.assertEquals("Captured text", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage(
+        self.dummy.callback_message(self.makemessage("!regex command with prefix"))
+        self.assertEquals("Regex command", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("regex command without prefix"))
+        self.assertEquals("Regex command", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("!regex command with capture group: Captured text"))
+        self.assertEquals("Captured text", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("regex command with capture group: Captured text"))
+        self.assertEquals("Captured text", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage(
             "This command also allows extra text in front - regex command with capture group: Captured text"))
-        self.assertEquals("Captured text", self.dummy.pop_message().getBody())
+        self.assertEquals("Captured text", self.dummy.pop_message().body)
 
     @patch('errbot.backends.base.BOT_ALT_PREFIXES', new=('Err',))
     @patch('errbot.backends.base.BOT_ALT_PREFIX_SEPARATORS', new=(',', ';'))
     def test_callback_message_with_re_botcmd_and_alt_prefixes(self):
         self.dummy = DummyBackend()
-        self.dummy.callback_message(None, self.makemessage("!regex command with prefix"))
-        self.assertEquals("Regex command", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage("Err regex command with prefix"))
-        self.assertEquals("Regex command", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage("Err, regex command with prefix"))
-        self.assertEquals("Regex command", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage("regex command without prefix"))
-        self.assertEquals("Regex command", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage("!regex command with capture group: Captured text"))
-        self.assertEquals("Captured text", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage("regex command with capture group: Captured text"))
-        self.assertEquals("Captured text", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage(
+        self.dummy.callback_message(self.makemessage("!regex command with prefix"))
+        self.assertEquals("Regex command", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("Err regex command with prefix"))
+        self.assertEquals("Regex command", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("Err, regex command with prefix"))
+        self.assertEquals("Regex command", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("regex command without prefix"))
+        self.assertEquals("Regex command", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("!regex command with capture group: Captured text"))
+        self.assertEquals("Captured text", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("regex command with capture group: Captured text"))
+        self.assertEquals("Captured text", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage(
             "This command also allows extra text in front - regex command with capture group: Captured text"))
-        self.assertEquals("Captured text", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage("Err, regex command with capture group: Captured text"))
-        self.assertEquals("Captured text", self.dummy.pop_message().getBody())
-        self.dummy.callback_message(None, self.makemessage(
+        self.assertEquals("Captured text", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("Err, regex command with capture group: Captured text"))
+        self.assertEquals("Captured text", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage(
             "Err This command also allows extra text in front - regex command with capture group: Captured text"))
-        self.assertEquals("Captured text", self.dummy.pop_message().getBody())
+        self.assertEquals("Captured text", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("!match_here"))
+        self.assertEquals("1", self.dummy.pop_message().body)
+        self.dummy.callback_message(self.makemessage("!match_here match_here match_here"))
+        self.assertEquals("3", self.dummy.pop_message().body)
 
     def test_regex_commands_can_overlap(self):
-        self.dummy.callback_message(None, self.makemessage("!matched by two commands"))
-        response = (self.dummy.pop_message().getBody(), self.dummy.pop_message().getBody())
+        self.dummy.callback_message(self.makemessage("!matched by two commands"))
+        response = (self.dummy.pop_message().body, self.dummy.pop_message().body)
         self.assertTrue(response == ("one", "two") or response == ("two", "one"))
 
     def test_regex_commands_allow_passing_re_flags(self):
-        self.dummy.callback_message(None, self.makemessage("!MaTcHeD By TwO cOmMaNdS"))
-        self.assertEquals("two", self.dummy.pop_message().getBody())
+        self.dummy.callback_message(self.makemessage("!MaTcHeD By TwO cOmMaNdS"))
+        self.assertEquals("two", self.dummy.pop_message().body)
         self.assertRaises(Empty, self.dummy.pop_message, **{'timeout': 1})
 
     def test_access_controls(self):
@@ -437,11 +449,11 @@ class BotCmds(unittest.TestCase):
                     ACCESS_CONTROLS=test['acl']
             ):
                 logger = logging.getLogger(__name__)
-                logger.info("** message: {}".format(test['message'].getBody()))
+                logger.info("** message: {}".format(test['message'].body))
                 logger.info("** acl: {!r}".format(test['acl']))
                 logger.info("** acl_default: {!r}".format(test['acl_default']))
-                self.dummy.callback_message(None, test['message'])
+                self.dummy.callback_message(test['message'])
                 self.assertEqual(
                     test['expected_response'],
-                    self.dummy.pop_message().getBody()
+                    self.dummy.pop_message().body
                 )

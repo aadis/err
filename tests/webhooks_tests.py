@@ -39,7 +39,7 @@ def webserver(testbot):
 
 
 class TestWebhooks(object):
-    extra_plugin_dir = os.path.dirname(os.path.realpath(__file__)) + os.sep + 'webhooks_tests'
+    extra_plugin_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'webhooks_tests')
 
     def test_not_configured_url_returns_404(self, testbot):
         assert requests.post(
@@ -133,3 +133,12 @@ class TestWebhooks(object):
             JSONOBJECT,
             verify=False
         ).text == repr(json.loads(JSONOBJECT))
+
+    def test_custom_headers_and_status_codes(self):
+        assert requests.post(
+            'http://localhost:{}/webhook6/'.format(WEBSERVER_PORT)
+        ).headers['X-Powered-By'] == "Err"
+
+        assert requests.post(
+            'http://localhost:{}/webhook7/'.format(WEBSERVER_PORT)
+        ).status_code == 403

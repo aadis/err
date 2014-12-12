@@ -62,6 +62,7 @@ parameter::
     automatically be decoded so that `incoming_request` is a
     dictionary of the JSON data.
 
+
 Handling form-encoded requests
 ------------------------------
 
@@ -84,6 +85,60 @@ a *payload* parameter::
                     'Commit on %s!' % payload['repository']['name'],
                     message_type='groupchat'
                 )
+
+
+The raw request
+---------------
+
+The above webhooks are convenient for simple tasks, but sometimes
+you might wish to have more power and have access to the actual
+request itself. By setting the `raw` parameter of the
+:func:`~errbot.decorators.webhook` decorator to `True`, you will
+be able to get the
+`bottle.BaseRequest <http://bottlepy.org/docs/dev/api.html#bottle.BaseRequest>`_
+which contains all the details about the actual request::
+
+    from errbot import BotPlugin, webhook
+
+    class PluginExample(BotPlugin):
+        @webhook(raw=True)
+        def test(self, request):
+            user_agent = request.get_header("user-agent", "Unknown")
+            return "Your user-agent is {}".format(user_agent)
+
+
+Returning custom headers and status codes
+-----------------------------------------
+
+Adjusting the response headers, setting cookies or returning a
+different status code can all be done by manipulating the
+`bottle.response <http://bottlepy.org/docs/dev/api.html#bottle.response>`_
+object. The bottle docs on `the response object
+<http://bottlepy.org/docs/dev/tutorial.html#the-response-object>`_
+explain this in more detail. Here's an example of setting a 
+custom header::
+
+    from errbot import BotPlugin, webhook
+    from bottle import response
+
+    class PluginExample(BotPlugin):
+        @webhook
+        def example(self, incoming_request):
+            response.set_header("X-Powered-By", "Err")
+            return "OK"
+
+Bottle also has various helpers such as the `abort()` method.
+Using this method we could, for example, return a 403 forbidden
+response like so::
+
+    from errbot import BotPlugin, webhook
+    from bottle import abort
+
+    class PluginExample(BotPlugin):
+        @webhook
+        def example(self, incoming_request):
+            abort(403, "Forbidden")
+
 
 Testing a webhook through chat
 ------------------------------

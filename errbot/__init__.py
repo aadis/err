@@ -1,4 +1,3 @@
-import logging
 import sys
 
 PY3 = sys.version_info[0] == 3
@@ -8,7 +7,7 @@ __all__ = ['BotPlugin', 'webhook', 'webroute', 'webview']
 
 # Import some stuff here so that it's easier to access them
 from errbot.decorators import botcmd, re_botcmd, webhook
-from errbot.botplugin import BotPlugin
+from errbot.botplugin import BotPlugin, SeparatorArgParser, ShlexArgParser
 from errbot.builtins.wsview import route, view
 
 
